@@ -1,0 +1,143 @@
+Add-Type -AssemblyName System.Drawing
+
+$root = $PSScriptRoot
+$dirs = Get-ChildItem -LiteralPath $root -Directory
+
+Write-Host "Processing folders (Root images only)..." -ForegroundColor Cyan
+
+foreach ($dir in $dirs) {
+    # 移除 -Recurse，只抓取第一層的圖片
+    $firstImage = Get-ChildItem -LiteralPath $dir.FullName -File | Where-Object { $_.Extension -match '(?i)\.(jpg|jpeg|png|webp|bmp)$' } | Sort-Object Name | Select-Object -First 1
+
+    if (-not $firstImage) {
+        Write-Host "Skipping $($dir.Name) (no image found in root)" -ForegroundColor Yellow
+        continue
+    }
+
+    Write-Host "Processing: $($dir.Name) -> using $($firstImage.Name)"
+
+    $iniPath = Join-Path $dir.FullName "desktop.ini"
+
+    try {
+        # 依圖片內容產生 icon 檔名，圖片內容變更時檔名也會跟著變
+        $iconHash = (Get-FileHash -LiteralPath $firstImage.FullName -Algorithm SHA256).Hash.Substring(0, 16).ToLowerInvariant()
+        $iconFileName = "foldericon_$iconHash.ico"
+        $iconPath = Join-Path $dir.FullName $iconFileName
+
+        # 如果存在目前要覆寫的檔案，先移除隱藏與系統屬性，以免無法覆寫
+        if (Test-Path -LiteralPath $iconPath) {
+            $icoItem = Get-Item -LiteralPath $iconPath -Force
+            $icoItem.Attributes = [System.IO.FileAttributes]::Normal
+        }
+
+        if (Test-Path -LiteralPath $iniPath) {
+            $iniItem = Get-Item -LiteralPath $iniPath -Force
+            $iniItem.Attributes = [System.IO.FileAttributes]::Normal
+        }
+
+        # 自動刪除舊的 foldericon_*.ico，也順便清理舊版固定檔名 foldericon.ico
+        Get-ChildItem -LiteralPath $dir.FullName -File -Force |
+            Where-Object { $_.Name -like 'foldericon_*.ico' -or $_.Name -eq 'foldericon.ico' } |
+            ForEach-Object {
+                if ($_.Name -ne $iconFileName) {
+                    $_.Attributes = [System.IO.FileAttributes]::Normal
+                    Remove-Item -LiteralPath $_.FullName -Force
+                }
+            }
+
+        # 圖片處理
+        $img = [System.Drawing.Image]::FromFile($firstImage.FullName)
+        $size = 256
+        $bmp = New-Object System.Drawing.Bitmap($size, $size)
+        $bmp.SetResolution($img.HorizontalResolution, $img.VerticalResolution)
+        $graphics = [System.Drawing.Graphics]::FromImage($bmp)
+        
+        $graphics.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+        $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+        $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+        $graphics.Clear([System.Drawing.Color]::Transparent)
+
+        $ratio = $img.Width / $img.Height
+        if ($ratio -gt 1) {
+            $w = $size
+            $h = [math]::Round($size / $ratio)
+            $x = 0
+            $y = [math]::Round(($size - $h) / 2)
+        } else {
+            $h = $size
+            $w = [math]::Round($size * $ratio)
+            $y = 0
+            $x = [math]::Round(($size - $w) / 2)
+        }
+
+        $graphics.DrawImage($img, $x, $y, $w, $h)
+        
+        $ms = New-Object System.IO.MemoryStream
+        $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+        $pngData = $ms.ToArray()
+        
+        $graphics.Dispose()
+        $bmp.Dispose()
+        $img.Dispose()
+        $ms.Dispose()
+
+        # 寫入 ico
+        $fs = [System.IO.File]::Create($iconPath)
+        $bw = New-Object System.IO.BinaryWriter($fs)
+        $bw.Write([uint16]0); $bw.Write([uint16]1); $bw.Write([uint16]1)
+        $bw.Write([byte]0); $bw.Write([byte]0); $bw.Write([byte]0); $bw.Write([byte]0)
+        $bw.Write([uint16]1); $bw.Write([uint16]32)
+        $bw.Write([uint32]$pngData.Length); $bw.Write([uint32]22)
+        $bw.Write($pngData)
+        $bw.Dispose(); $fs.Dispose()
+
+        $icoItem = Get-Item -LiteralPath $iconPath -Force
+        $icoItem.Attributes = [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System
+
+        # 寫入 desktop.ini (使用 ASCII 避免編碼 BOM 干擾 Windows 讀取，並指向新的 icon 檔名)
+        $iniContent = "[.ShellClassInfo]`r`nIconResource=$iconFileName,0`r`n"
+        [System.IO.File]::WriteAllText($iniPath, $iniContent, [System.Text.Encoding]::ASCII)
+
+        $iniItem = Get-Item -LiteralPath $iniPath -Force
+        $iniItem.Attributes = [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System
+
+        # 設定資料夾屬性，並且更新修改時間來強制 Windows 重新整理快取
+        $dirItem = Get-Item -LiteralPath $dir.FullName -Force
+        $dirItem.Attributes = $dirItem.Attributes -bor [System.IO.FileAttributes]::ReadOnly
+        $dirItem.LastWriteTime = (Get-Date)
+
+    } catch {
+        Write-Host "Error $($dir.Name) : $_" -ForegroundColor Red
+    }
+}
+
+Write-Host "All done! Restarting Explorer to refresh icon cache..." -ForegroundColor Green
+
+# 紀錄目前開啟的檔案總管視窗路徑
+$openPaths = @()
+try {
+    $shell = New-Object -ComObject Shell.Application
+    foreach ($window in $shell.Windows()) {
+        if ($window.FullName -match 'explorer\.exe$') {
+            $path = $window.Document.Folder.Self.Path
+            if ($path -and (Test-Path -LiteralPath $path)) {
+                $openPaths += $path
+            }
+        }
+    }
+} catch {
+    Write-Host "Warning: Failed to get open explorer windows. $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
+# 重新啟動 explorer
+Stop-Process -Name explorer -Force
+Start-Sleep -Seconds 2
+
+# 重新開啟剛剛的資料夾
+if ($openPaths.Count -gt 0) {
+    $openPaths = $openPaths | Select-Object -Unique
+    foreach ($path in $openPaths) {
+        Invoke-Item -LiteralPath $path
+    }
+}
