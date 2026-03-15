@@ -7,90 +7,100 @@ Write-Host "Processing folders (Root images only)..." -ForegroundColor Cyan
 
 foreach ($dir in $dirs) {
     # 移除 -Recurse，只抓取第一層的圖片
-    $firstImage = Get-ChildItem -LiteralPath $dir.FullName -File | Where-Object { $_.Extension -match '(?i)\.(jpg|jpeg|png|webp|bmp)$' } | Sort-Object Name | Select-Object -First 1
+    $images = Get-ChildItem -LiteralPath $dir.FullName -File | Where-Object { $_.Extension -match '(?i)\.(jpg|jpeg|png|webp|bmp)$' } | Sort-Object Name
 
-    if (-not $firstImage) {
+    if (-not $images) {
         Write-Host "Skipping $($dir.Name) (no image found in root)" -ForegroundColor Yellow
         continue
     }
 
-    Write-Host "Processing: $($dir.Name) -> using $($firstImage.Name)"
-
-    $iniPath = Join-Path $dir.FullName "desktop.ini"
-
-    try {
-        # 依圖片內容產生 icon 檔名，圖片內容變更時檔名也會跟著變
-        $iconHash = (Get-FileHash -LiteralPath $firstImage.FullName -Algorithm SHA256).Hash.Substring(0, 16).ToLowerInvariant()
-        $iconFileName = "foldericon_$iconHash.ico"
-        $iconPath = Join-Path $dir.FullName $iconFileName
-
-        # 如果存在目前要覆寫的檔案，先移除隱藏與系統屬性，以免無法覆寫
-        if (Test-Path -LiteralPath $iconPath) {
-            $icoItem = Get-Item -LiteralPath $iconPath -Force
-            $icoItem.Attributes = [System.IO.FileAttributes]::Normal
+    $success = $false
+    foreach ($firstImage in $images) {
+        try {
+            $img = [System.Drawing.Image]::FromFile($firstImage.FullName)
+        } catch [System.OutOfMemoryException] {
+            Write-Host "  -> 略過 $($firstImage.Name) (不支援的格式，如 WebP 導致記憶體不足)" -ForegroundColor DarkYellow
+            continue
+        } catch {
+            Write-Host "  -> 略過 $($firstImage.Name) (無法讀取: $_)" -ForegroundColor DarkYellow
+            continue
         }
 
-        if (Test-Path -LiteralPath $iniPath) {
-            $iniItem = Get-Item -LiteralPath $iniPath -Force
-            $iniItem.Attributes = [System.IO.FileAttributes]::Normal
-        }
+        Write-Host "Processing: $($dir.Name) -> using $($firstImage.Name)"
+        $iniPath = Join-Path $dir.FullName "desktop.ini"
 
-        # 自動刪除舊的 foldericon_*.ico，也順便清理舊版固定檔名 foldericon.ico
-        Get-ChildItem -LiteralPath $dir.FullName -File -Force |
-            Where-Object { $_.Name -like 'foldericon_*.ico' -or $_.Name -eq 'foldericon.ico' } |
-            ForEach-Object {
-                if ($_.Name -ne $iconFileName) {
-                    $_.Attributes = [System.IO.FileAttributes]::Normal
-                    Remove-Item -LiteralPath $_.FullName -Force
-                }
+        try {
+            # 依圖片內容產生 icon 檔名，圖片內容變更時檔名也會跟著變
+            $iconHash = (Get-FileHash -LiteralPath $firstImage.FullName -Algorithm SHA256).Hash.Substring(0, 16).ToLowerInvariant()
+            $iconFileName = "foldericon_$iconHash.ico"
+            $iconPath = Join-Path $dir.FullName $iconFileName
+
+            # 如果存在目前要覆寫的檔案，先移除隱藏與系統屬性，以免無法覆寫
+            if (Test-Path -LiteralPath $iconPath) {
+                $icoItem = Get-Item -LiteralPath $iconPath -Force
+                $icoItem.Attributes = [System.IO.FileAttributes]::Normal
             }
 
-        # 圖片處理
-        $img = [System.Drawing.Image]::FromFile($firstImage.FullName)
-        $size = 256
-        $bmp = New-Object System.Drawing.Bitmap($size, $size)
-        $bmp.SetResolution($img.HorizontalResolution, $img.VerticalResolution)
-        $graphics = [System.Drawing.Graphics]::FromImage($bmp)
-        
-        $graphics.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
-        $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-        $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
-        $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-        $graphics.Clear([System.Drawing.Color]::Transparent)
+            if (Test-Path -LiteralPath $iniPath) {
+                $iniItem = Get-Item -LiteralPath $iniPath -Force
+                $iniItem.Attributes = [System.IO.FileAttributes]::Normal
+            }
 
-        $ratio = $img.Width / $img.Height
-        if ($ratio -gt 1) {
-            $w = $size
-            $h = [math]::Round($size / $ratio)
-            $x = 0
-            $y = [math]::Round(($size - $h) / 2)
-        } else {
-            $h = $size
-            $w = [math]::Round($size * $ratio)
-            $y = 0
-            $x = [math]::Round(($size - $w) / 2)
-        }
+            # 自動刪除舊的 foldericon_*.ico，也順便清理舊版固定檔名 foldericon.ico
+            Get-ChildItem -LiteralPath $dir.FullName -File -Force |
+                Where-Object { $_.Name -like 'foldericon_*.ico' -or $_.Name -eq 'foldericon.ico' } |
+                ForEach-Object {
+                    if ($_.Name -ne $iconFileName) {
+                        $_.Attributes = [System.IO.FileAttributes]::Normal
+                        Remove-Item -LiteralPath $_.FullName -Force
+                    }
+                }
 
-        $graphics.DrawImage($img, $x, $y, $w, $h)
-        
-        $ms = New-Object System.IO.MemoryStream
-        $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
-        $pngData = $ms.ToArray()
-        
-        $graphics.Dispose()
-        $bmp.Dispose()
-        $img.Dispose()
-        $ms.Dispose()
+            # 圖片處理
+            $size = 256
+            $bmp = New-Object System.Drawing.Bitmap($size, $size)
+            $bmp.SetResolution($img.HorizontalResolution, $img.VerticalResolution)
+            $graphics = [System.Drawing.Graphics]::FromImage($bmp)
+            
+            $graphics.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+            $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+            $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+            $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+            $graphics.Clear([System.Drawing.Color]::Transparent)
 
-        # 寫入 ico
-        $fs = [System.IO.File]::Create($iconPath)
-        $bw = New-Object System.IO.BinaryWriter($fs)
-        $bw.Write([uint16]0); $bw.Write([uint16]1); $bw.Write([uint16]1)
-        $bw.Write([byte]0); $bw.Write([byte]0); $bw.Write([byte]0); $bw.Write([byte]0)
-        $bw.Write([uint16]1); $bw.Write([uint16]32)
-        $bw.Write([uint32]$pngData.Length); $bw.Write([uint32]22)
-        $bw.Write($pngData)
-        $bw.Dispose(); $fs.Dispose()
+            $ratio = $img.Width / $img.Height
+            if ($ratio -gt 1) {
+                $w = $size
+                $h = [math]::Round($size / $ratio)
+                $x = 0
+                $y = [math]::Round(($size - $h) / 2)
+            } else {
+             $h = $size
+                $w = [math]::Round($size * $ratio)
+                $y = 0
+                $x = [math]::Round(($size - $w) / 2)
+            }
+
+            $graphics.DrawImage($img, $x, $y, $w, $h)
+            
+            $ms = New-Object System.IO.MemoryStream
+            $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+            $pngData = $ms.ToArray()
+            
+            $graphics.Dispose()
+            $bmp.Dispose()
+            $img.Dispose()
+            $ms.Dispose()
+
+            # 寫入 ico
+            $fs = [System.IO.File]::Create($iconPath)
+            $bw = New-Object System.IO.BinaryWriter($fs)
+            $bw.Write([uint16]0); $bw.Write([uint16]1); $bw.Write([uint16]1)
+            $bw.Write([byte]0); $bw.Write([byte]0); $bw.Write([byte]0); $bw.Write([byte]0)
+            $bw.Write([uint16]1); $bw.Write([uint16]32)
+            $bw.Write([uint32]$pngData.Length); $bw.Write([uint32]22)
+            $bw.Write($pngData)
+            $bw.Dispose(); $fs.Dispose()
 
         $icoItem = Get-Item -LiteralPath $iconPath -Force
         $icoItem.Attributes = [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System
@@ -103,12 +113,25 @@ foreach ($dir in $dirs) {
         $iniItem.Attributes = [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System
 
         # 設定資料夾屬性，並且更新修改時間來強制 Windows 重新整理快取
-        $dirItem = Get-Item -LiteralPath $dir.FullName -Force
-        $dirItem.Attributes = $dirItem.Attributes -bor [System.IO.FileAttributes]::ReadOnly
-        $dirItem.LastWriteTime = (Get-Date)
+        try {
+            $dirItem = Get-Item -LiteralPath $dir.FullName -Force
+            $dirItem.Attributes = $dirItem.Attributes -bor [System.IO.FileAttributes]::ReadOnly
+            $dirItem.LastWriteTime = (Get-Date)
+        } catch {
+            Write-Host "  -> 警告: 無法更新資料夾時間 (可能被其他程式鎖定)，但不影響圖示套用" -ForegroundColor Yellow
+        }
 
-    } catch {
-        Write-Host "Error $($dir.Name) : $_" -ForegroundColor Red
+        $success = $true
+        break # 成功處理，跳出圖片迴圈
+
+        } catch {
+            Write-Host "  -> 處理圖片時發生錯誤 ($($firstImage.Name)): $_" -ForegroundColor Red
+            if ($null -ne $img) { $img.Dispose() }
+        }
+    }
+
+    if (-not $success) {
+        Write-Host "Skipping $($dir.Name) (找不到可用或支援的圖片)" -ForegroundColor Yellow
     }
 }
 
