@@ -1,4 +1,5 @@
 Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName PresentationCore
 
 $root = $PSScriptRoot
 $dirs = Get-ChildItem -LiteralPath $root -Directory
@@ -17,12 +18,42 @@ foreach ($dir in $dirs) {
     $success = $false
     foreach ($firstImage in $images) {
         try {
-            $img = [System.Drawing.Image]::FromFile($firstImage.FullName)
-        } catch [System.OutOfMemoryException] {
-            Write-Host "  -> 略過 $($firstImage.Name) (不支援的格式，如 WebP 導致記憶體不足)" -ForegroundColor DarkYellow
-            continue
+            if ($firstImage.Extension -match '(?i)\.webp$') {
+                # 針對 WebP，使用 WPF 的 BitmapDecoder 來讀取並轉換為 PNG，然後再讓 System.Drawing 讀取
+                $stream = New-Object System.IO.FileStream($firstImage.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+                $decoder = [System.Windows.Media.Imaging.BitmapDecoder]::Create($stream, [System.Windows.Media.Imaging.BitmapCreateOptions]::PreservePixelFormat, [System.Windows.Media.Imaging.BitmapCacheOption]::Default)
+                $bitmapFrame = $decoder.Frames[0]
+
+                $encoder = New-Object System.Windows.Media.Imaging.PngBitmapEncoder
+                $encoder.Frames.Add($bitmapFrame)
+
+                $memoryStream = New-Object System.IO.MemoryStream
+                $encoder.Save($memoryStream)
+                
+                # 讓 stream 不關閉，以免後續 System.Drawing 讀取不到
+                $memoryStream.Position = 0
+                $img = [System.Drawing.Image]::FromStream($memoryStream)
+                
+                $stream.Dispose()
+                # 注意：$memoryStream 需要等 $img.Dispose() 後再關閉
+            } else {
+                $img = [System.Drawing.Image]::FromFile($firstImage.FullName)
+            }
         } catch {
-            Write-Host "  -> 略過 $($firstImage.Name) (無法讀取: $_)" -ForegroundColor DarkYellow
+            $errMsg = $_.Exception.Message
+            
+            # 如果是傳統讀取失敗，但它是 WebP (可能是因為我們不在 WPF 環境或解碼器失敗)
+            if ($firstImage.Extension -match '(?i)\.webp$') {
+                 Write-Host "  -> 略過 $($firstImage.Name) (WebP 解碼失敗，請確認系統是否有安裝 WebP 影像延伸模組: $errMsg)" -ForegroundColor DarkYellow
+            } elseif ($_.Exception -is [System.OutOfMemoryException]) {
+                Write-Host "  -> 略過 $($firstImage.Name) (不支援的格式或記憶體不足: $errMsg)" -ForegroundColor DarkYellow
+            } else {
+                Write-Host "  -> 略過 $($firstImage.Name) (無法讀取: $errMsg)" -ForegroundColor DarkYellow
+            }
+            
+            if ($null -ne $stream) { $stream.Dispose() }
+            if ($null -ne $memoryStream) { $memoryStream.Dispose() }
+            
             continue
         }
 
@@ -91,6 +122,7 @@ foreach ($dir in $dirs) {
             $bmp.Dispose()
             $img.Dispose()
             $ms.Dispose()
+            if ($null -ne $memoryStream) { $memoryStream.Dispose() }
 
             # 寫入 ico
             $fs = [System.IO.File]::Create($iconPath)
