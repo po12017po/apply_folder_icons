@@ -1,4 +1,4 @@
-Add-Type -AssemblyName System.Drawing
+﻿Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName PresentationCore
 
 $root = $PSScriptRoot
@@ -134,15 +134,15 @@ foreach ($dir in $dirs) {
             $bw.Write($pngData)
             $bw.Dispose(); $fs.Dispose()
 
-        $icoItem = Get-Item -LiteralPath $iconPath -Force
-        $icoItem.Attributes = [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System
+            $icoItem = Get-Item -LiteralPath $iconPath -Force
+            $icoItem.Attributes = [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System
 
-        # 寫入 desktop.ini (使用 ASCII 避免編碼 BOM 干擾 Windows 讀取，並指向新的 icon 檔名)
-        $iniContent = "[.ShellClassInfo]`r`nIconResource=$iconFileName,0`r`n"
-        [System.IO.File]::WriteAllText($iniPath, $iniContent, [System.Text.Encoding]::ASCII)
+            # 寫入 desktop.ini (使用 ASCII 避免編碼 BOM 干擾 Windows 讀取，並指向新的 icon 檔名)
+            $iniContent = "[.ShellClassInfo]`r`nIconResource=$iconFileName,0`r`n"
+            [System.IO.File]::WriteAllText($iniPath, $iniContent, [System.Text.Encoding]::ASCII)
 
-        $iniItem = Get-Item -LiteralPath $iniPath -Force
-        $iniItem.Attributes = [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System
+            $iniItem = Get-Item -LiteralPath $iniPath -Force
+            $iniItem.Attributes = [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System
 
         # 設定資料夾屬性，並且更新修改時間來強制 Windows 重新整理快取
         try {
@@ -153,9 +153,8 @@ foreach ($dir in $dirs) {
             Write-Host "  -> 警告: 無法更新資料夾時間 (可能被其他程式鎖定)，但不影響圖示套用" -ForegroundColor Yellow
         }
 
-        $success = $true
-        break # 成功處理，跳出圖片迴圈
-
+            $success = $true
+            break # 成功處理，跳出圖片迴圈
         } catch {
             Write-Host "  -> 處理圖片時發生錯誤 ($($firstImage.Name)): $_" -ForegroundColor Red
             if ($null -ne $img) { $img.Dispose() }
